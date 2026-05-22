@@ -1,0 +1,119 @@
+---
+title: Rollbacks and Deploy History
+---
+
+import { Callout, Steps } from 'nextra/components'
+
+# Rollbacks and Deploy History
+
+Every VMKit deploy is immutable. When your app is built, the container image is tagged with the full git commit SHA and pushed to GHCR — it sits there permanently. Rolling back doesn't rebuild anything; it tells Kamal to re-deploy an image that's already in the registry. The switch is fast, usually under 60 seconds.
+
+This means rollbacks are reliable by construction. There's no "re-run the build and hope it produces the same artifact" — the exact image that ran before is what goes back onto your VM.
+
+---
+
+## Rolling Back from the Dashboard
+
+<Steps>
+
+### Open the Deploys page
+
+Go to **Repos → your repo → Environments → your environment → Deploys**. The list shows every deploy for this environment, newest first.
+
+### Find the last successful deploy
+
+Look for a deploy with status **Succeeded** before the one that broke things. Each entry shows the commit SHA, the timestamp, who triggered it (push, manual, or MCP), and the duration.
+
+### Click "Roll Back"
+
+On the deploy row you want to restore, click **Roll Back**. VMKit creates a new deploy entry (so the action is auditable) and dispatches a Kamal re-deploy pointing at that commit's image.
+
+### Watch the deploy complete
+
+The new deploy appears at the top of the list with status **Running**. Click into it to watch the log stream. When it reaches **Succeeded**, the previous version is live.
+
+</Steps>
+
+---
+
+## Rolling Back via Claude Code
+
+If you have the [VMKit MCP integration](/guides/mcp-claude-code) set up, you can roll back without touching the dashboard:
+
+```
+Roll back my-fastapi-app to the previous version
+```
+
+```
+my-fastapi-app on staging is broken — revert to the last good deploy
+```
+
+Claude will call the rollback tool, confirm the target SHA, and report back when the deploy completes.
+
+---
+
+## Understanding Deploy History
+
+Each deploy record contains:
+
+| Field | Description |
+|---|---|
+| **Status** | `pending`, `running`, `succeeded`, `failed`, or `cancelled` |
+| **Commit SHA** | The full git SHA of the code that was deployed |
+| **Triggered by** | `push` (automatic), `manual` (dashboard button), or `mcp` (Claude Code) |
+| **GitHub Actions run** | Direct link to the GH Actions workflow run that built the image |
+| **Duration** | Wall-clock time from deploy start to first healthy response |
+| **Deployed at** | UTC timestamp |
+
+VMKit keeps the **last 50 deploys per environment**. Entries beyond 50 are pruned automatically — but the container images in GHCR are not deleted, so you can still reference and re-deploy an older SHA manually if needed.
+
+<Callout type="info">
+  Deploy records are append-only — nothing is overwritten. Every rollback creates a new deploy record pointing at the older SHA. Your deploy history is a complete audit trail of what ran in each environment and when.
+</Callout>
+
+---
+
+## Reading Deploy Logs
+
+Every deploy streams its full output in real time. Go to **Deploys → click any deploy → Logs**.
+
+What you'll see:
+
+1. **GitHub Actions output** — the buildpack compile step, image push to GHCR, Kamal invocation
+2. **Kamal deploy output** — SSH steps, container pull, health check results, old container teardown
+3. **vmkit-agent output** — the agent's confirmation that the new container is healthy and traffic is flowing
+
+If a deploy fails, the logs will pinpoint exactly where. Common failure points:
+- Buildpack detection failed (missing `Procfile`)
+- Image push to GHCR failed (GitHub token permissions issue)
+- Health check timed out (app not binding to `0.0.0.0:$PORT`)
+- Kamal couldn't SSH to the VM (VM offline or firewall change)
+
+---
+
+## Cancelling a Running Deploy
+
+If you triggered a deploy by mistake or want to stop one that's clearly headed for failure, go to **Deploys → the running deploy → Cancel**.
+
+This sends a cancellation signal to the GitHub Actions workflow. The workflow stops at its current step.
+
+<Callout type="warning">
+  If Kamal has already started swapping the container by the time you cancel, the deploy may complete anyway. Kamal's container swap is an atomic operation at the VM level — once it begins pulling and starting the new container, cancelling the GH Actions workflow doesn't interrupt it. In that case, the deploy will finish (and may succeed or fail on its own), and you can roll back from the Deploys page afterward.
+</Callout>
+
+---
+
+## The Migration Pitfall
+
+Rollbacks restore the app code and container image. They do not touch your database.
+
+If your deploy included a database migration that ran against the schema and the migration was destructive — dropping a column, renaming a table, altering a constraint — rolling back the app code will leave a newer schema behind an older codebase. This will break things in ways that aren't obvious.
+
+<Callout type="warning">
+  **If your database migration ran partway through before the deploy failed, rolling back the app won't fix the schema.** You have two options:
+
+  1. **Write a rollback migration.** A down-migration that reverses the schema change. Apply it manually, then roll back the app.
+  2. **Design migrations to be forward-only.** Prefer additive changes (add column, add index) over destructive ones (drop column, rename). Old code that ignores an extra column is usually fine; old code that references a missing column is not.
+
+  This isn't a VMKit limitation — it applies to any deployment system. The safest pattern is: deploy migrations separately from code changes, and make migrations backward-compatible with the previous app version.
+</Callout>

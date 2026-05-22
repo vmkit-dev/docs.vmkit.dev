@@ -1,0 +1,108 @@
+---
+title: Bring Your Own Server (BYOS)
+description: VMKit is a control plane, not a hosting provider. You bring the VM; VMKit brings the deployment infrastructure.
+---
+
+import { Callout, Cards } from 'nextra/components'
+
+# Bring Your Own Server (BYOS)
+
+Most deployment platforms are vertically integrated: they sell you compute, network, storage, and orchestration as a bundle. That's convenient to start, but it creates coupling. When your usage grows, you pay their rates, not cloud-provider rates. When the platform has an outage, your app is down. When you want to move, you have to figure out how to untangle yourself from their runtime, their secrets management, their Postgres service, and everything else they've wrapped around your app.
+
+VMKit is built on a different premise. It is a control plane, not a hosting provider. The compute is yours — provisioned with your own cloud API key, billed directly to your account, and reachable via SSH regardless of what happens to VMKit. The deployment infrastructure — the GitHub Actions workflow, the Kamal config, the Traefik proxy, the Let's Encrypt certificate — is also yours, checked into your repo as plain YAML files that any developer can read and understand.
+
+VMKit's job is to wire all of that together and keep it running. It is the conductor, not the cloud.
+
+---
+
+## Why This Model Exists
+
+### The Economics Argument
+
+The raw numbers make the case clearly. A Hetzner `cax11` — 2 ARM64 vCPUs, 4 GB RAM, 40 GB NVMe, 20 TB bandwidth — costs approximately $4.50 per month. An equivalent deployment slot on Railway costs roughly $20–40 per month, depending on usage. On Render, the numbers are similar.
+
+That's not a small difference. At modest usage — say, a few apps running continuously — a PaaS bill can reach $100–200 per month. The equivalent VMKit setup would be $20–40 in VM costs plus a $19 VMKit subscription: roughly half the price at comparable resource consumption, and the gap widens as you scale.
+
+The reason is structural. PaaS platforms buy compute at wholesale and sell it at retail, with a margin built in. VMKit buys nothing — you buy the compute directly, and VMKit charges only for its coordination layer.
+
+<Callout type="info">
+  Hetzner ARM64 machines (the `cax` series) are particularly good value. ARM64 gives you meaningful performance-per-dollar improvements over equivalent x86 VMs, and Paketo Buildpacks produce ARM-native container images by default when the runner architecture matches the target.
+</Callout>
+
+### The Lock-in Argument
+
+When you provision a VM through VMKit, the API call goes to Hetzner (or DigitalOcean) using *your* token, creating a VM under *your* account, billed to *your* payment method. VMKit is a party to the provisioning — it issues the API call — but the resulting resource belongs to you.
+
+The container images for your apps are pushed to GHCR under your GitHub org. Your `vmkit-deploy.yml` workflow is a regular GitHub Actions file in your repo. The Kamal config it references is checked in alongside it. The `kamal` OS user and its Docker socket access are standard Linux constructs, not VMKit-specific abstractions.
+
+If you cancel your VMKit subscription tomorrow, every VM keeps running. Every container keeps serving traffic. Every image stays in GHCR. You can SSH into the VM, run `kamal deploy` manually against the existing config, and continue operating without VMKit. The platform has no proprietary runtime embedded in your stack.
+
+This is the meaningful difference between "managed by a platform" and "orchestrated by a platform." VMKit orchestrates; it does not own.
+
+### The Data Sovereignty Argument
+
+Your code never passes through VMKit's servers. The deployment path is:
+
+```
+GitHub repo → GitHub Actions runner → GHCR (your org) → Kamal pull → Your VM
+```
+
+VMKit dispatches the GitHub Actions workflow via the GitHub API. The build happens on GitHub's runners. The image lands in your GHCR org. Kamal pulls the image and starts the container on your VM. At no point in this chain does VMKit receive, proxy, or store your source code or your built image.
+
+What VMKit does hold: encrypted copies of your cloud provider API tokens, your environment variable values, and deploy history (timestamps, status, image SHA). These are the minimum required to coordinate deployments. Your compute credentials are stored encrypted at rest using AES-256-GCM, never logged, and never returned in API responses after the initial save.
+
+The `vmkit-agent` process that runs on your VM streams logs and metrics back to the VMKit backend. Those logs are transient — they power the real-time dashboard view and the MCP `get_logs` tool. They're not stored as a long-term log archive by default. The logs also live on your VM in the Docker daemon's journal, accessible any time via `docker logs`.
+
+---
+
+## The Trade-off
+
+BYOS shifts a class of operational responsibility from VMKit to you. That's the deal, and it's worth being explicit about it.
+
+VMKit handles: workflow dispatch, config generation, DNS management, TLS provisioning, agent upgrades, and deploy coordination. It can tell you when a deploy failed and why.
+
+You handle: your VM's disk, memory, and CPU headroom. Your cloud region's availability. Your GHCR storage quota. Your Hetzner or DigitalOcean account's rate limits.
+
+If your VM runs out of disk space, Docker will fail to pull the new image and Kamal will report a deploy failure. VMKit will surface the error, but it cannot remediate it — that requires SSH access and a `docker system prune` or a disk expansion via the Hetzner console. If the Hetzner region you chose has an outage, your app is unavailable until the region recovers.
+
+<Callout type="warning">
+  VMKit monitors VM health via the `vmkit-agent` heartbeat and will alert you in the dashboard if the agent goes silent. But it cannot self-heal a VM that has a hardware failure or a full disk. Consider this the same operational contract as running a VPS anywhere: the platform gives you a machine; what happens to it is your responsibility.
+</Callout>
+
+This is not a reason to avoid BYOS — it's a reason to understand it. The same trade-off exists with any self-hosted infrastructure. VMKit makes it less likely that you'll hit these problems by giving you observability (logs, metrics, health signals) and automation (zero-downtime deploys, auto-TLS, agent self-upgrade). But it cannot eliminate the category of "things that happen to physical servers."
+
+---
+
+## When BYOS Makes Sense — and When It Doesn't
+
+BYOS is not the right answer for every workload. Part of building a mental model around VMKit is knowing where it fits.
+
+**It makes strong sense when:**
+
+- You have persistent server-side workloads — APIs, background workers, WebSocket servers, ML inference endpoints — that run continuously and would incur steady-state costs on a PaaS platform
+- Cost predictability matters; you want a fixed monthly VM bill rather than per-request or per-hour pricing with usage spikes
+- You want your data (images, logs, environment config) to stay in infrastructure you control
+- You're running multiple services on one VM and can share the base cost across them
+
+**It makes less sense when:**
+
+- Your app is a pure static site; serve it from Cloudflare Pages for free
+- Your workload is genuinely ephemeral — burst compute that runs for minutes per day; serverless (Lambda, Cloudflare Workers) will be cheaper and simpler
+- You have zero appetite for any ops responsibility and prefer to pay a premium for fully managed infrastructure; Railway or Fly are honest answers there
+
+---
+
+## VM Sizing Reference
+
+Start conservative and resize up when metrics show you need it. The Hetzner `cax` ARM64 line is generally the best value for most VMKit workloads.
+
+| Instance | vCPU | RAM | Disk | Price | Suitable for |
+|---|---|---|---|---|---|
+| `cax11` | 2 ARM64 | 4 GB | 40 GB | ~$4.50/mo | Small APIs, personal projects, low-traffic SaaS |
+| `cax21` | 4 ARM64 | 8 GB | 80 GB | ~$9/mo | Production apps with moderate traffic, apps + sidecar services |
+| `cax31` | 8 ARM64 | 16 GB | 160 GB | ~$18/mo | ML inference, high-traffic services, multi-app VMs |
+| `cax41` | 16 ARM64 | 32 GB | 320 GB | ~$36/mo | Memory-intensive workloads, local LLM serving |
+
+For DigitalOcean, the equivalent entry point is a `s-2vcpu-4gb` Droplet at roughly $24/mo — more expensive than Hetzner but with a larger global region footprint, which matters if your users are concentrated in regions Hetzner doesn't cover.
+
+Sizing is not permanent. You can change the instance type on an environment's Settings tab and redeploy — VMKit will resize the VM via the cloud API and re-run the deployment. There is a brief downtime during the resize itself (typically under a minute for Hetzner resize operations), but the app comes back automatically once the VM boots and the agent reconnects.

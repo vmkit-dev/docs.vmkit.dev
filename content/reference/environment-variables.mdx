@@ -1,0 +1,133 @@
+---
+title: Environment Variables Reference
+---
+
+import { Callout } from 'nextra/components'
+
+# Environment Variables Reference
+
+VMKit injects a set of variables into every running container. Users can additionally define their own variables via the dashboard or API. This page documents both categories, precedence rules, and security properties.
+
+---
+
+## System-Injected Variables
+
+Set automatically by VMKit. Present in every container without any configuration.
+
+| Variable | When set | Description | Example value |
+|---|---|---|---|
+| `PORT` | Always | The port your app must bind on. Traefik routes inbound traffic here. | `8000` |
+| `APP_ENV` | Always | The environment name as defined in VMKit. | `staging` |
+| `DATABASE_URL` | Postgres addon added | Full libpq connection string to the Postgres instance on the VM. | `postgres://vmkit:s3cr3t@localhost:5432/myapp` |
+| `REDIS_URL` | Redis addon added | Connection URL for the Redis instance on the VM. | `redis://localhost:6379` |
+| `MEILISEARCH_URL` | Meilisearch addon added | HTTP endpoint of the Meilisearch instance on the VM. | `http://localhost:7700` |
+| `MEILISEARCH_MASTER_KEY` | Meilisearch addon added | Randomly generated master key for Meilisearch. | `ms_k9x2p1r4q7w8t0y3u6i5o` |
+| `QDRANT_URL` | Qdrant addon added | HTTP endpoint of the Qdrant vector database on the VM. | `http://localhost:6333` |
+
+### Notes on `PORT`
+
+Your app must listen on `0.0.0.0:$PORT` — not `127.0.0.1` and not a hardcoded port. Traefik on the VM routes all HTTP/HTTPS traffic to this port. If your app ignores `PORT`, it will not receive traffic and health checks will fail.
+
+### Notes on addon variables
+
+Addon variables are injected only when the corresponding addon has been installed in the environment. If you access `DATABASE_URL` before adding the Postgres addon, the variable will be unset.
+
+---
+
+## `VMKIT_SSH_PRIVATE_KEY` — GitHub Repository Secret
+
+This is not an environment variable injected into your container. It is a GitHub Actions repository secret named `VMKIT_SSH_PRIVATE_KEY`, written to your repo by VMKit during the onboarding PR.
+
+| Property | Value |
+|---|---|
+| Type | GitHub Actions repository secret |
+| Name | `VMKIT_SSH_PRIVATE_KEY` |
+| Used by | `vmkit-deploy.yml` — passed to Kamal for SSH authentication to the `kamal` user on your VM |
+| Rotation | Automatic — re-generated when a new environment is created or when manually rotated from the dashboard |
+
+This secret does not appear in running containers. It is consumed by the GitHub Actions workflow only.
+
+---
+
+## User-Defined Variables
+
+Variables you set for your app — database URLs for external services, API keys, feature flags, etc.
+
+### Setting via dashboard
+
+**Repos → `{your-repo}` → Environments → `{environment}` → Env Vars → Edit**
+
+Enter key-value pairs. No quoting is needed — values are treated as raw strings. Toggle the **Secret** switch to store the value encrypted and redact it from future reads.
+
+### Setting via API
+
+`PUT /api/environments/{id}/env-vars` — full replacement of all user-defined vars.
+
+```bash
+curl -X PUT https://gateway.vmkit.dev/api/environments/env_01jx4pa/env-vars \
+  -H "Authorization: Bearer vmk_your_key_here" \
+  -H "Content-Type: application/json" \
+  -d '[
+    {"key": "SENTRY_DSN", "value": "https://abc@o0.ingest.sentry.io/0", "secret": false},
+    {"key": "STRIPE_SECRET_KEY", "value": "sk_live_xxx", "secret": true}
+  ]'
+```
+
+See [Env Vars — REST API Reference](/reference/api#env-vars) for the full endpoint specification.
+
+### Format rules
+
+| Rule | Detail |
+|---|---|
+| Key format | `[A-Z_][A-Z0-9_]*` — uppercase, underscores, no hyphens |
+| Value type | Always a string. Numbers, booleans, and JSON must be serialized by the caller. |
+| Quoting | Do not quote values. `VALUE=foo bar` sets the value to `foo bar`, not `"foo bar"`. |
+| Empty values | Allowed. Setting `KEY=` stores an empty string. |
+| Max key length | 256 characters |
+| Max value length | 65 536 characters |
+| Max vars per environment | 200 |
+
+---
+
+## Precedence
+
+System-injected variables always win. User-defined variables cannot override them.
+
+| Scenario | Result |
+|---|---|
+| User sets `PORT=9000` | System-injected `PORT=8000` is used. The user-supplied value is silently ignored. |
+| User sets `DATABASE_URL=postgres://...` with no Postgres addon | User value is used (no system value exists to override it). |
+| User sets `DATABASE_URL=postgres://...` with Postgres addon active | System-injected `DATABASE_URL` wins. User value is stored but not injected. |
+
+If you need to override a system-injected value for testing purposes, contact support — there is no self-service override for system vars.
+
+---
+
+## Secrets and Security
+
+| Property | Detail |
+|---|---|
+| Storage | All env vars (user and system) are stored encrypted at rest using AES-256-GCM. |
+| Key management | Encryption keys are managed by the VMKit backend and never leave the process. |
+| Logging | VMKit never logs variable values. They do not appear in deploy logs, agent logs, or audit events. |
+| API responses | Vars marked `secret: true` are returned as `"***"` in `GET /api/environments/{id}/env-vars`. Non-secret values are returned in plain text. |
+| Docker inspect | Env vars are passed to Docker containers at runtime. They are visible via `docker inspect <container>` on the VM to any user with Docker socket access. |
+
+<Callout type="warning">
+  Anyone with SSH access to your VM and Docker socket access can read all environment variable values via `docker inspect`. This includes the `kamal` OS user created during hardening. If you need a higher isolation guarantee, store secrets in an external secrets manager (Vault, AWS Secrets Manager, etc.) and fetch them at runtime rather than injecting them as env vars.
+</Callout>
+
+---
+
+## Effect Timing
+
+<Callout type="warning">
+  Env var changes take effect on the next deploy, not immediately. Saving new vars in the dashboard or via API does not restart the running container. Trigger a deploy — via the dashboard, the MCP `deploy` tool, or a `git push` to `main` — to apply the changes.
+</Callout>
+
+| Action | When vars are applied |
+|---|---|
+| Save new vars in dashboard | Next deploy |
+| `PUT /api/environments/{id}/env-vars` | Next deploy |
+| New deploy triggered | Immediately — new container starts with all current vars |
+| Addon added (Postgres, Redis, etc.) | Next deploy — the addon URL var is injected at that point |

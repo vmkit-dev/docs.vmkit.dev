@@ -1,0 +1,248 @@
+---
+title: MCP Tools Reference
+---
+
+import { Callout } from 'nextra/components'
+
+# MCP Tools Reference
+
+The VMKit MCP server exposes infrastructure operations as callable tools to any MCP-compatible client (Claude Code, Cursor, custom agents). Every tool call is forwarded to `gateway.vmkit.dev` with your Bearer token; the same auth, rate limits, and audit trail apply as the REST API.
+
+---
+
+## Connection
+
+| Property | Value |
+|---|---|
+| Server URL | `https://mcp.vmkit.dev` |
+| Transport | HTTP (Streamable HTTP) |
+| Auth method | Bearer token in `Authorization` header |
+| Token prefix | `vmk_` |
+
+**MCP config entry (`~/.claude/mcp.json`):**
+
+```json
+{
+  "mcpServers": {
+    "vmkit": {
+      "type": "http",
+      "url": "https://mcp.vmkit.dev",
+      "headers": {
+        "Authorization": "Bearer vmk_your_key_here"
+      }
+    }
+  }
+}
+```
+
+---
+
+## Tools
+
+### `scan_repo`
+
+Scans a GitHub repository via the GitHub API and an AI classifier. Detects language, framework, and buildpack compatibility. Does not modify the repository.
+
+#### Parameters
+
+| Name | Type | Required | Description |
+|---|---|---|---|
+| `repo` | `string` | Yes | Repository in `owner/repo-name` format. The GitHub App must be installed on this repo. |
+
+#### Returns
+
+| Field | Type | Description |
+|---|---|---|
+| `language` | `string` | Detected primary language (e.g. `"python"`, `"node"`, `"ruby"`) |
+| `framework` | `string \| null` | Detected framework (e.g. `"fastapi"`, `"nextjs"`, `"rails"`) |
+| `buildpack` | `string` | Paketo buildpack URI selected for this repo |
+| `procfile_detected` | `boolean` | Whether a `Procfile` was found at the repo root |
+| `dockerfile_detected` | `boolean` | Whether a `Dockerfile` was found at the repo root |
+| `scan_id` | `string` | UUID of the scan record; referenced in subsequent deploy calls |
+
+#### Example — Claude Code prompt
+
+```
+Scan badri/my-fastapi-app and tell me what buildpack it would use
+```
+
+#### Example — raw JSON call
+
+```json
+{
+  "tool": "scan_repo",
+  "arguments": {
+    "repo": "badri/my-fastapi-app"
+  }
+}
+```
+
+**Response:**
+
+```json
+{
+  "language": "python",
+  "framework": "fastapi",
+  "buildpack": "gcr.io/buildpacks/builder:v1",
+  "procfile_detected": true,
+  "dockerfile_detected": false,
+  "scan_id": "sc_01jx4n8rz3q5m7k2p0d6w9b1e"
+}
+```
+
+---
+
+### `harden_vm`
+
+Runs security hardening on a provisioned VM. Creates the `kamal` OS user, grants Docker socket access, and tightens SSH configuration (disables root login and password auth). Must be called after the VM is provisioned and `vmkit-agent` is connected, before the first deploy.
+
+<Callout type="info">
+  In normal deploy flows this step is called automatically by the backend. Call `harden_vm` directly only if you are recovering a VM that was provisioned but never hardened, or if the automatic hardening step failed.
+</Callout>
+
+#### Parameters
+
+| Name | Type | Required | Description |
+|---|---|---|---|
+| `instance_id` | `string` | Yes | The instance ID of a provisioned (but not yet hardened) VM. Obtain from `GET /api/instances` or from the `instance_id` field in a previous `deploy` response. |
+
+#### Returns
+
+| Field | Type | Description |
+|---|---|---|
+| `status` | `"hardened" \| "already_hardened"` | Result of the operation. `already_hardened` means the VM was in a valid state and no action was taken. |
+| `instance_id` | `string` | Echo of the input `instance_id`. |
+
+#### Example — Claude Code prompt
+
+```
+Harden the VM with instance ID inst_01jx4n9abc for my staging environment
+```
+
+#### Example — raw JSON call
+
+```json
+{
+  "tool": "harden_vm",
+  "arguments": {
+    "instance_id": "inst_01jx4n9abc"
+  }
+}
+```
+
+**Response:**
+
+```json
+{
+  "status": "hardened",
+  "instance_id": "inst_01jx4n9abc"
+}
+```
+
+---
+
+### `deploy`
+
+Deploys a repository to a named environment. Manages the full lifecycle: onboarding PR (first call only), VM provisioning, hardening, DNS registration, and GitHub Actions dispatch.
+
+**Two-phase behavior:**
+
+- **First call** — if `vmkit-deploy.yml` does not exist in the repo, VMKit opens a pull request adding the workflow file and a starter Kamal config. Returns `status: "scaffolding_pr_open"` with the PR URL. Merge the PR, then call `deploy` again.
+- **Subsequent calls** — provisions a VM (if none exists for the environment), hardens it, registers DNS, and dispatches the GitHub Actions workflow. Returns when the deploy completes or fails.
+
+#### Parameters
+
+| Name | Type | Required | Description |
+|---|---|---|---|
+| `repo` | `string` | Yes | Repository in `owner/repo-name` format. |
+| `dest` | `string` | Yes | Environment name (e.g. `"staging"`, `"production"`). Must exist in the VMKit workspace; create via dashboard or `POST /api/repos/{id}/environments`. |
+| `sha` | `string` | No | Git SHA to deploy. Defaults to the latest commit on `main`. |
+
+#### Returns
+
+| Field | Type | Description |
+|---|---|---|
+| `status` | `"scaffolding_pr_open" \| "succeeded" \| "failed" \| "running"` | Outcome of the call. |
+| `pr_url` | `string \| null` | GitHub PR URL. Present only when `status` is `"scaffolding_pr_open"`. |
+| `app_url` | `string \| null` | Live HTTPS URL (e.g. `https://my-app-staging.vmkit.app`). Present on `"succeeded"`. |
+| `run_url` | `string \| null` | GitHub Actions run URL for the deploy workflow. Present on terminal statuses. |
+| `instance_id` | `string \| null` | ID of the VM that was provisioned or reused. |
+| `deploy_id` | `string \| null` | VMKit deploy record ID; use with `GET /api/deploys/{id}` for polling. |
+
+#### Example — Claude Code prompts
+
+```
+Deploy badri/my-fastapi-app to staging
+```
+
+```
+Deploy badri/my-fastapi-app to production at SHA abc1234
+```
+
+#### Example — raw JSON call
+
+```json
+{
+  "tool": "deploy",
+  "arguments": {
+    "repo": "badri/my-fastapi-app",
+    "dest": "staging"
+  }
+}
+```
+
+**Response (scaffolding phase):**
+
+```json
+{
+  "status": "scaffolding_pr_open",
+  "pr_url": "https://github.com/badri/my-fastapi-app/pull/12",
+  "app_url": null,
+  "run_url": null,
+  "instance_id": null,
+  "deploy_id": null
+}
+```
+
+**Response (deploy completed):**
+
+```json
+{
+  "status": "succeeded",
+  "pr_url": null,
+  "app_url": "https://my-fastapi-app-staging.vmkit.app",
+  "run_url": "https://github.com/badri/my-fastapi-app/actions/runs/14912345",
+  "instance_id": "inst_01jx4n9abc",
+  "deploy_id": "dep_01jx5p0qr8s6n3t4u2v7w0y1z"
+}
+```
+
+---
+
+## Error Reference
+
+### Authentication error
+
+Returned as a `ToolError` when the `vmk_` token is missing, invalid, expired, or lacks scope.
+
+```
+Authentication failed — your vmk_ API key is missing, invalid, expired, or lacks the scope this tool requires.
+```
+
+Resolve by checking the token in your MCP config against **Settings → API Keys** in the dashboard.
+
+### Backend error propagation
+
+Non-auth errors (4xx, 5xx from the REST API) are wrapped in a `ToolError` with the backend's JSON error body as the message. Example:
+
+```
+{"error": "repo_not_found", "message": "No repo with id repo_abc123 found in this workspace."}
+```
+
+| Error key | Meaning |
+|---|---|
+| `repo_not_found` | The `owner/repo-name` is not connected to your VMKit workspace. |
+| `environment_not_found` | The `dest` environment name does not exist for this repo. |
+| `compute_target_missing` | No cloud provider is configured in your workspace. |
+| `github_app_not_installed` | The GitHub App is not installed on the target repo. |
+| `vm_not_provisioned` | `harden_vm` was called but no VM is associated with this instance ID. |

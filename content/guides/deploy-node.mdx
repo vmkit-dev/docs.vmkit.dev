@@ -1,0 +1,294 @@
+---
+title: Deploy a Node.js App
+description: Deploy an Express, Next.js, or any Node.js application to your own VM using VMKit's Buildpack detection and Kamal pipeline.
+---
+
+import { Callout, Steps, Tabs } from 'nextra/components'
+
+# Deploy a Node.js App
+
+VMKit detects Node.js applications by their `package.json` and builds them into container images using [Cloud Native Buildpacks](https://buildpacks.io/). No Dockerfile required. GitHub push triggers the build; Kamal handles the deploy onto your VM.
+
+This guide covers Express and Next.js as the two most common cases, and highlights a few Next.js-specific settings you need to be aware of.
+
+---
+
+## Prerequisites
+
+- A Node.js application in a GitHub repository with a `package.json` at the root
+- A `start` script in `package.json` (or a `Procfile` — see below)
+- A VMKit account with a [cloud provider connected](/guides/add-server)
+- The VMKit GitHub App [installed on the repo](/guides/connect-github)
+
+---
+
+## How Buildpack detection works
+
+VMKit triggers detection when you connect a repo. It reads the root of the repo via the GitHub API and applies these rules:
+
+1. **`package.json` present at root** → Node.js Buildpack selected
+2. Node.js version read from `engines.node` in `package.json`, or `.node-version`, or `.nvmrc` — whichever is found first
+3. Framework detected from dependencies:
+   - `next` → **Next.js**
+   - `express` → **Express**
+   - `fastify` → **Fastify**
+   - `@nestjs/core` → **NestJS**
+   - Others → **Node.js (generic)**
+
+If `package.json` has a `build` script, the Buildpack runs it automatically before packaging the final image. This covers TypeScript compilation, Next.js builds, and similar pre-start steps.
+
+---
+
+## The Procfile (optional but recommended)
+
+A `Procfile` lets you explicitly declare how to start your app and, if needed, run additional process types like background workers.
+
+```procfile filename="Procfile"
+web: node dist/server.js
+```
+
+If you don't include a `Procfile`, VMKit falls back to running the `start` script from your `package.json`. Both approaches work; the Procfile gives you more control.
+
+The `$PORT` environment variable is always injected. Your server must listen on `process.env.PORT`:
+
+```js
+const port = process.env.PORT || 3000
+app.listen(port, '0.0.0.0', () => {
+  console.log(`Listening on port ${port}`)
+})
+```
+
+---
+
+## Examples
+
+<Tabs items={['Express', 'Next.js']}>
+  <Tabs.Tab>
+
+### Express example
+
+A minimal Express app ready for VMKit:
+
+```json filename="package.json"
+{
+  "name": "my-express-app",
+  "version": "1.0.0",
+  "engines": {
+    "node": "20.x"
+  },
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2"
+  },
+  "devDependencies": {
+    "typescript": "^5.4.5",
+    "@types/express": "^4.17.21",
+    "@types/node": "^20.12.0"
+  }
+}
+```
+
+```typescript filename="src/index.ts"
+import express from 'express'
+
+const app = express()
+const port = process.env.PORT || 3000
+
+app.use(express.json())
+
+app.get('/', (req, res) => {
+  res.json({ status: 'ok', message: 'Hello from VMKit' })
+})
+
+app.get('/health', (req, res) => {
+  res.json({ status: 'healthy' })
+})
+
+app.listen(port, () => {
+  console.log(`Server running on port ${port}`)
+})
+```
+
+```procfile filename="Procfile"
+web: node dist/index.js
+```
+
+The Buildpack will run `npm run build` (your `tsc` call) automatically, then start the app with the command in the Procfile.
+
+  </Tabs.Tab>
+  <Tabs.Tab>
+
+### Next.js example
+
+Next.js requires one important config change to work correctly with VMKit: you must enable **standalone output mode**. This tells Next.js to produce a self-contained server bundle that Kamal can run without the full `node_modules` tree.
+
+```js filename="next.config.js"
+/** @type {import('next').NextConfig} */
+const nextConfig = {
+  output: 'standalone',
+}
+
+module.exports = nextConfig
+```
+
+<Callout type="warning">
+  VMKit does **not** support Next.js static exports (`output: 'export'`). Static exports produce HTML files with no Node.js server, so there's nothing for Kamal to run. If your app uses SSR, API routes, or Server Components, standalone mode is the correct choice.
+</Callout>
+
+```json filename="package.json"
+{
+  "name": "my-next-app",
+  "version": "0.1.0",
+  "engines": {
+    "node": "20.x"
+  },
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "node .next/standalone/server.js"
+  },
+  "dependencies": {
+    "next": "14.2.3",
+    "react": "^18",
+    "react-dom": "^18"
+  }
+}
+```
+
+The Buildpack runs `next build` and then starts the app using `.next/standalone/server.js` — Next.js's standalone output entry point. The `$PORT` environment variable is automatically forwarded to the Next.js server.
+
+  </Tabs.Tab>
+</Tabs>
+
+---
+
+## Step-by-step deployment
+
+<Steps>
+
+### Connect your repo
+
+In the VMKit dashboard, go to **Repos** and click **Connect Repo**. Search for your Node.js repo and select it.
+
+VMKit queues a background scan. The repo card should show the detected stack — something like **Node.js 20 / Express** or **Node.js 20 / Next.js**. If the detection is wrong, open the repo detail page and use **Override Buildpack** to correct it.
+
+### Create an environment
+
+Click into the repo, then click **Setup Deployment**. Name the environment `staging` and choose:
+
+- **Provider:** your connected Hetzner or DigitalOcean account
+- **Region:** closest to your users
+- **Instance type:** `cax11` (Hetzner, 2 vCPU / 4 GB, ~$4.50/mo) is a solid starting point
+
+Click **Create Environment**. VMKit provisions the VM (60–90 seconds) and commits a `.github/workflows/vmkit.yml` file to your repo.
+
+### Set environment variables
+
+Go to the environment's **Env Vars** tab and add any variables your app needs. Common ones:
+
+| Key | Value |
+|---|---|
+| `NODE_ENV` | `production` |
+| `SESSION_SECRET` | `your-secret-here` |
+| `NEXT_PUBLIC_API_URL` | `https://api.example.com` |
+
+`PORT` is always injected by VMKit — do not set it manually. `REDIS_URL` is injected when you add the Redis addon.
+
+### Deploy
+
+Click **Deploy** on the environment. VMKit triggers a GitHub Actions run that builds your image and deploys it via Kamal. A typical Node.js build takes 2–5 minutes; Next.js builds can take longer depending on your page count.
+
+When the deploy shows **Succeeded**, click the live URL in the environment header (`{repo-slug}-{env-slug}.vmkit.app`).
+
+</Steps>
+
+---
+
+## Adding Redis as an addon
+
+Many Node.js apps use Redis for session storage, caching, or a job queue. VMKit can run a Redis container alongside your app.
+
+Go to **Addons → Add Addon → Redis**. VMKit provisions a Redis container on the same VM and injects `REDIS_URL` as an environment variable on the next deploy.
+
+Example usage with Express sessions:
+
+```typescript filename="src/session.ts"
+import session from 'express-session'
+import { createClient } from 'redis'
+import { RedisStore } from 'connect-redis'
+
+const client = createClient({ url: process.env.REDIS_URL })
+await client.connect()
+
+export const sessionMiddleware = session({
+  store: new RedisStore({ client }),
+  secret: process.env.SESSION_SECRET!,
+  resave: false,
+  saveUninitialized: false,
+  cookie: { secure: true, maxAge: 86400000 },
+})
+```
+
+For BullMQ or similar:
+
+```typescript filename="src/queue.ts"
+import { Queue, Worker } from 'bullmq'
+import { Redis } from 'ioredis'
+
+const connection = new Redis(process.env.REDIS_URL!)
+
+export const emailQueue = new Queue('email', { connection })
+
+export const emailWorker = new Worker(
+  'email',
+  async (job) => {
+    // process job.data
+  },
+  { connection }
+)
+```
+
+---
+
+## Running background workers
+
+Add a `worker` entry to your `Procfile` to run a process alongside your web server:
+
+```procfile filename="Procfile"
+web: node dist/server.js
+worker: node dist/worker.js
+```
+
+Kamal runs `web` and `worker` as separate containers from the same image. Both receive the same environment variables. Only `web` is exposed to public HTTP traffic.
+
+---
+
+## TypeScript and build steps
+
+The Node.js Buildpack runs your `build` script from `package.json` automatically before starting the app. This means:
+
+- `tsc` for TypeScript compilation
+- `next build` for Next.js
+- `vite build`, `esbuild`, etc.
+
+Your `start` script (or `Procfile`) should reference the **compiled output**, not the TypeScript source. If your build writes to `dist/`, start with `node dist/server.js`. If it writes to `.next/standalone/`, start with `node .next/standalone/server.js`.
+
+<Callout type="info">
+  Development dependencies listed under `devDependencies` are installed during the build phase and then pruned before the final image is assembled. Keep your TypeScript compiler and build tooling in `devDependencies`; keep your runtime dependencies in `dependencies`. This keeps the production image small.
+</Callout>
+
+---
+
+## Common issues
+
+**App starts but returns 502**
+The most common cause is binding to `localhost` or a hardcoded port. Make sure your server listens on `0.0.0.0:${process.env.PORT}`. The Kamal proxy health check reaches `0.0.0.0` — it won't reach `localhost` from outside the container on some network configurations.
+
+**`next build` fails in CI**
+If your Next.js build fetches data at build time (e.g., via `getStaticProps`), those API calls run during the build step. Make sure `NEXT_PUBLIC_API_URL` and any other build-time env vars are set in VMKit before deploying.
+
+**`MODULE_NOT_FOUND` at startup**
+This usually means a package is in `devDependencies` but needed at runtime, or the compiled output path doesn't match the start command. Check that your `build` script runs correctly locally (`npm run build`) and that the output file the `start` script references actually exists after the build.

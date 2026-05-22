@@ -1,0 +1,165 @@
+---
+title: Use VMKit with Claude Code
+---
+
+import { Callout, Steps, Tabs } from 'nextra/components'
+
+# Use VMKit with Claude Code
+
+Infrastructure management has always required context-switching: you're deep in code, something breaks in production, and you have to stop, open a browser, navigate the dashboard, find the right page, and act. MCP changes that contract entirely.
+
+With VMKit's MCP server, Claude Code becomes your infrastructure interface. You describe what you want in plain English — "deploy my app to staging", "show me the last 50 lines of logs", "roll back to the previous version" — and Claude dispatches the right tool call behind the scenes. The dashboard still exists, but you may forget you need it.
+
+---
+
+## What This Looks Like in Practice
+
+Here's a real session. The conversation block below shows how you'd interact with Claude Code once VMKit is wired up:
+
+```
+You: Deploy the latest version of my-fastapi-app to staging
+
+Claude: Deploying my-fastapi-app to staging...
+[uses vmkit deploy tool]
+✓ Deployed my-fastapi-app:sha-abc123. Health checks passing.
+URL: https://my-fastapi-app-staging.vmkit.app
+
+You: Show me the last 50 lines of logs for my-fastapi-app
+
+Claude: [uses vmkit logs tool]
+2026-05-22T14:31:02Z INFO  Uvicorn running on http://0.0.0.0:3000
+2026-05-22T14:31:08Z INFO  GET /api/health → 200 (2ms)
+2026-05-22T14:31:09Z ERROR sqlalchemy.exc.OperationalError: could not connect to server
+2026-05-22T14:31:09Z ERROR   Is the server running on host "localhost" and accepting TCP/IP connections?
+...
+
+You: Something's wrong — roll back to the previous version
+
+Claude: Rolling back my-fastapi-app to sha-xyz789...
+[uses vmkit rollback tool]
+✓ Rolled back. Previous version is live.
+URL: https://my-fastapi-app-staging.vmkit.app
+```
+
+That last recovery — spot a broken log line, ask for a rollback, done — used to take five minutes of dashboard navigation. Now it's two sentences.
+
+---
+
+## Prerequisites
+
+- [Claude Code](https://claude.ai/claude-code) installed (any recent version)
+- A VMKit account at [dashboard.vmkit.dev](https://dashboard.vmkit.dev) with at least one repo connected
+- A deployed environment to test against (follow the [Quickstart](/quickstart) if you haven't deployed yet)
+
+---
+
+## Setup
+
+<Steps>
+
+### Create an API key
+
+In the VMKit dashboard, go to **Settings → API Keys → Create Key**. Give it a meaningful name — `claude-code-local` is a good convention if you work on multiple machines.
+
+Copy the token. It starts with `vmk_`. This key grants full access to your workspace, so treat it like a password and don't commit it to a repo.
+
+### Add VMKit to your MCP config
+
+Open (or create) `~/.claude/mcp.json` and add the VMKit server entry:
+
+```json
+{
+  "mcpServers": {
+    "vmkit": {
+      "type": "http",
+      "url": "https://mcp.vmkit.dev",
+      "headers": {
+        "Authorization": "Bearer vmk_your_key_here"
+      }
+    }
+  }
+}
+```
+
+Replace `vmk_your_key_here` with the token you just copied. The `type: "http"` field tells Claude Code this is a remote MCP server — no local process to manage.
+
+<Callout type="info">
+  If you're self-hosting VMKit, replace `https://mcp.vmkit.dev` with your own MCP endpoint. The rest of the config stays the same.
+</Callout>
+
+### Restart Claude Code and verify
+
+Quit and reopen Claude Code (or reload the MCP servers from the command palette). Then ask:
+
+```
+List my VMKit repos
+```
+
+Claude should respond with the repositories connected to your VMKit account. If it returns an auth error instead, double-check that the `vmk_` token is correct and hasn't been revoked in the dashboard.
+
+</Steps>
+
+---
+
+## Available MCP Tools
+
+These are the tools Claude Code can call on your behalf. You never need to invoke them directly — just describe what you want and Claude picks the right one.
+
+| Tool | What it does | Example prompt |
+|---|---|---|
+| `scan_repo` | Scans a GitHub repo, detects the language and framework, and returns buildpack results | "Scan my-rails-app and tell me what buildpack it would use" |
+| `harden_vm` | Runs security hardening on a provisioned VM — creates the `kamal` user, grants Docker access, and locks down SSH | "Harden the VM for my staging environment" |
+| `deploy` | Deploys a repo to an environment; the first call may open a scaffolding PR, the second call provisions the VM and deploys | "Deploy my-fastapi-app to production" |
+
+<Callout type="default">
+  The VMKit MCP server is intentionally thin. Each tool call forwards to the VMKit backend REST API with your Bearer token, so the same auth, rate limiting, and audit logging applies as if you'd clicked through the dashboard.
+</Callout>
+
+---
+
+## Useful Prompts to Try
+
+Once you're set up, these prompts work well out of the box:
+
+**Deployment**
+```
+Deploy my-fastapi-app to staging
+```
+```
+What's the deploy status for my-fastapi-app on production?
+```
+```
+Roll back my-fastapi-app to the previous version
+```
+
+**Scanning and planning**
+```
+Scan my-rails-app and tell me if it's ready to deploy
+```
+```
+What language and framework does my-node-api use?
+```
+
+**Chaining operations**
+```
+Scan my-new-service, then deploy it to staging if everything looks good
+```
+```
+Harden the VM for my staging environment, then deploy my-fastapi-app to it
+```
+
+Claude will walk through each step in sequence, pausing to confirm before taking irreversible actions.
+
+---
+
+## Tips
+
+**Chain operations naturally.** MCP tools compose. You can ask Claude to "scan my repo, check if it's Python, and if so deploy it to staging" — Claude will call `scan_repo`, evaluate the result, and only proceed to `deploy` if the condition is met.
+
+**Ask for explanations.** If a deploy fails, ask "what went wrong?" and Claude can interpret the error output from the tool result and suggest fixes.
+
+**Use it during incident response.** When something is on fire, you don't want to click through a dashboard. Being able to type "show me the logs for my-app in production and roll back if there are errors" dramatically shortens the loop.
+
+<Callout type="warning">
+  Your `vmk_` API key has full access to your VMKit workspace — it can deploy, provision VMs, and modify environments. Treat it like a root password. Don't paste it into shared terminals, commit it to a repo, or store it in plain text outside of your MCP config. If a key is compromised, revoke it immediately in **Settings → API Keys**.
+</Callout>

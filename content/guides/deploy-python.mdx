@@ -1,0 +1,257 @@
+---
+title: Deploy a Python App
+description: Deploy a FastAPI or Django application to your own VM using VMKit's Buildpack detection and Kamal deployment pipeline.
+---
+
+import { Callout, Steps } from 'nextra/components'
+
+# Deploy a Python App
+
+VMKit detects Python applications automatically, builds them into container images using [Cloud Native Buildpacks](https://buildpacks.io/), and deploys them with Kamal. You don't need to write a Dockerfile or maintain a container registry — VMKit handles all of that through GitHub Actions.
+
+This guide uses FastAPI as the primary example. Django, Flask, and other WSGI/ASGI frameworks follow the same pattern.
+
+---
+
+## Prerequisites
+
+- A Python web app in a GitHub repository
+- One of the following dependency files at the repo root:
+  - `requirements.txt`
+  - `pyproject.toml` (with a `[project]` or `[tool.poetry]` section)
+  - `setup.py`
+- A VMKit account with a [cloud provider connected](/guides/add-server)
+- The VMKit GitHub App [installed on the repo](/guides/connect-github)
+
+You don't need a Dockerfile. You don't need to configure a container registry. You don't need to write any CI/CD YAML manually — VMKit commits a workflow file to your repo during the setup step.
+
+---
+
+## How Buildpack detection works
+
+When you connect a repo, VMKit reads the file tree via the GitHub API and applies the following detection rules in order:
+
+1. **requirements.txt present** → Python Buildpack selected
+2. **pyproject.toml present** → Python Buildpack selected
+3. **setup.py present** → Python Buildpack selected
+
+Once Python is confirmed, VMKit looks for further signals to identify the framework:
+
+- `fastapi` or `uvicorn` in dependencies → **FastAPI / ASGI**
+- `django` in dependencies → **Django**
+- `flask` in dependencies → **Flask**
+- `gunicorn` in dependencies → **WSGI (generic)**
+
+The detected framework affects the default start command if you don't supply a `Procfile`. You can always override it.
+
+---
+
+## The Procfile
+
+A `Procfile` at the repo root tells VMKit (and Kamal) how to start each process type. It's optional — if you don't include one, VMKit will infer a start command based on the detected framework — but writing one explicitly gives you full control.
+
+```procfile filename="Procfile"
+web: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+worker: celery -A app.tasks worker --loglevel=info
+beat: celery -A app.tasks beat --loglevel=info
+```
+
+A few things to know:
+
+- The `web` process is the only required type. VMKit maps external HTTP traffic to it.
+- `$PORT` is always injected by VMKit. Your server **must** bind to `$PORT` — hardcoding `8000` will cause the health check to fail.
+- Each additional process type (`worker`, `beat`) runs as a separate container on the same VM. Kamal manages their lifecycle independently.
+- Process names are arbitrary strings, but `web`, `worker`, and `beat` are conventional.
+
+---
+
+## Minimal example app
+
+Here's a complete minimal FastAPI application to test with:
+
+```python filename="app/main.py"
+from fastapi import FastAPI
+
+app = FastAPI()
+
+@app.get("/")
+def read_root():
+    return {"status": "ok", "message": "Hello from VMKit"}
+
+@app.get("/health")
+def health():
+    return {"status": "healthy"}
+```
+
+```text filename="requirements.txt"
+fastapi>=0.110.0
+uvicorn[standard]>=0.29.0
+```
+
+```procfile filename="Procfile"
+web: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+```
+
+VMKit's health check calls `GET /health` (or `GET /` if `/health` doesn't return 2xx) after each deploy. Keep this route fast and dependency-free.
+
+---
+
+## Step-by-step deployment
+
+<Steps>
+
+### Connect your repo
+
+In the VMKit dashboard, go to **Repos** and click **Connect Repo**. Search for your Python repo and select it.
+
+VMKit queues a background scan. Within a few seconds the repo card shows the detected stack — it should read something like **Python 3.11 / FastAPI**. If the detection looks wrong, click the repo card and use **Override Buildpack** to correct it.
+
+### Create a staging environment
+
+Click into the repo, then click **Setup Deployment**. VMKit asks you to create an environment — name it `staging`. Choose:
+
+- **Provider:** the Hetzner or DigitalOcean account you connected earlier
+- **Region:** pick the one closest to your users
+- **Instance type:** `cax11` is a good starting point (2 vCPU, 4 GB RAM)
+
+Click **Create Environment**. VMKit provisions a VM in the background — this takes 60–90 seconds. While that runs, VMKit also commits a `.github/workflows/vmkit.yml` file to your repo's default branch. This is the GitHub Actions workflow that builds and deploys your app on every push.
+
+### Add environment variables
+
+Before deploying, set any env vars your app needs. Go to the environment's **Env Vars** tab and add key-value pairs. Common ones for a Python app:
+
+| Key | Value |
+|---|---|
+| `APP_ENV` | `staging` |
+| `SECRET_KEY` | `your-secret-here` |
+| `ALLOWED_HOSTS` | `*` (relax for staging) |
+
+`DATABASE_URL` and `REDIS_URL` are injected automatically when you add those addons (see below). Don't set them manually.
+
+<Callout type="info">
+  Env vars are injected as Docker environment variables at deploy time. A redeployment is required for changes to take effect — VMKit will prompt you to redeploy after saving.
+</Callout>
+
+### Deploy
+
+Click **Deploy** on the environment card (or go to the environment's **Deploys** tab and click **New Deploy**). The DeployModal shows which branch you're deploying and asks for confirmation.
+
+VMKit triggers a GitHub Actions run. The pipeline:
+
+1. Checks out your code
+2. Runs the Buildpack builder (`pack build`) to produce a container image
+3. Pushes the image to GHCR
+4. Calls the VMKit control plane, which coordinates Kamal to pull and run the new image on your VM
+
+The entire process typically takes 3–6 minutes on a fresh deploy, faster on subsequent deploys (layer caching kicks in).
+
+### Check the live URL
+
+Once the deploy shows **Succeeded**, click the URL shown in the environment header — it follows the pattern `{repo-slug}-{env-slug}.vmkit.app`. You should see your app responding.
+
+If the deploy fails, click into the deploy detail to see the step-by-step timeline. The most common failure for Python apps is a missing or incorrect `Procfile` command (wrong module path, wrong variable name).
+
+</Steps>
+
+---
+
+## Adding Postgres as an addon
+
+VMKit can provision a Postgres instance alongside your app in one click.
+
+Go to the environment's **Addons** tab and click **Add Addon → PostgreSQL**. VMKit:
+
+1. Runs a Postgres container on the same VM as your app (via a Kamal accessory service)
+2. Generates a `DATABASE_URL` in the format `postgresql://user:pass@localhost:5432/dbname`
+3. Injects `DATABASE_URL` as an environment variable on your next deploy
+
+In your Django settings, you can consume it directly:
+
+```python filename="settings.py"
+import os
+import dj_database_url
+
+DATABASES = {
+    'default': dj_database_url.config(
+        default=os.environ.get('DATABASE_URL'),
+        conn_max_age=600,
+    )
+}
+```
+
+For FastAPI with SQLAlchemy:
+
+```python filename="app/database.py"
+import os
+from sqlalchemy import create_engine
+
+engine = create_engine(os.environ["DATABASE_URL"])
+```
+
+<Callout type="warning">
+  The Postgres addon uses a container on your VM — it's not a managed database service. For production workloads, back it up regularly or consider a managed database. VMKit's addon is ideal for staging environments and early-stage production apps.
+</Callout>
+
+---
+
+## Adding a background worker
+
+Background task processing requires two entries in your `Procfile`: the `web` process and a `worker` process.
+
+```procfile filename="Procfile"
+web: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+worker: celery -A app.tasks worker --loglevel=info --concurrency=2
+```
+
+Kamal runs `web` and `worker` as separate containers. The worker shares the same environment variables (including `DATABASE_URL` and `REDIS_URL`) and the same image — it just uses a different entrypoint command.
+
+To add Redis (required for Celery's broker), go to **Addons → Add Addon → Redis**. VMKit injects `REDIS_URL` automatically.
+
+Your Celery configuration then becomes:
+
+```python filename="app/tasks.py"
+import os
+from celery import Celery
+
+celery_app = Celery(
+    "app",
+    broker=os.environ["REDIS_URL"],
+    backend=os.environ["REDIS_URL"],
+)
+```
+
+---
+
+## How Kamal handles multiple process types
+
+```mermaid
+graph TD
+    Procfile["Procfile\nweb / worker / beat"]
+    Procfile --> KamalWeb["Kamal service\n'web' container"]
+    Procfile --> KamalWorker["Kamal service\n'worker' container"]
+    Procfile --> KamalBeat["Kamal service\n'beat' container"]
+
+    KamalWeb -->|"port $PORT"| Traefik["Traefik\nreverse proxy"]
+    KamalWorker -->|"no inbound traffic"| Redis
+    KamalBeat -->|"no inbound traffic"| Redis
+
+    Traefik --> PublicURL["app-staging.vmkit.app"]
+
+    style Procfile fill:#1a1a2e,color:#e0e0e0
+    style PublicURL fill:#16213e,color:#7bed9f
+```
+
+Only the `web` process is exposed to public traffic via Traefik. Worker and beat processes run in isolated containers with access to the same VM network, allowing them to reach Postgres and Redis on `localhost`.
+
+---
+
+## Common issues
+
+**Health check failing after deploy**
+Your `web` process must bind to `0.0.0.0:$PORT`. If you hardcode port 8000 and VMKit injects `PORT=3000`, the health check will time out. Use `--port $PORT` in your Procfile command.
+
+**ModuleNotFoundError at startup**
+The Buildpack installs dependencies from `requirements.txt` at build time. If you've added a package locally but haven't committed the updated `requirements.txt`, it won't be in the image. Always pin your dependencies and commit the file.
+
+**Celery worker not connecting to Redis**
+Check that the Redis addon is installed on the same environment and that `REDIS_URL` is present in your env vars list. The addon injects it automatically, but only from the next deploy onward.

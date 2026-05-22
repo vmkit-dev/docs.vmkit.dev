@@ -1,0 +1,167 @@
+---
+title: Add a Cloud Provider
+description: Connect a Hetzner or DigitalOcean account so VMKit can provision VMs on your behalf.
+---
+
+import { Callout, Steps, Tabs } from 'nextra/components'
+
+# Add a Cloud Provider
+
+VMKit is a bring-your-own-infrastructure platform. You connect a Hetzner or DigitalOcean account by pasting an API token into the dashboard, and VMKit uses that token to provision VMs, assign SSH keys, and install the VMKit agent. Your servers, your bill — VMKit is just the control plane.
+
+This guide walks through creating the token, adding it to VMKit, and understanding what VMKit will and won't do with it.
+
+---
+
+## Why a dedicated project and token?
+
+VMKit provisions infrastructure under the credentials you provide. If you reuse a token that covers other production resources, a bug or misconfiguration on VMKit's side could theoretically affect those resources. Creating a dedicated project (Hetzner) or using a scoped token (DigitalOcean) means:
+
+- You can audit exactly what VMKit created (every resource will be in that project).
+- You can revoke VMKit's access instantly by deleting the token without affecting anything else.
+- Your monthly invoice shows VMKit-related costs clearly, separate from other workloads.
+
+<Callout type="warning">
+  Never paste your API token into a chat, commit it to a git repository, or store it in an unencrypted file. VMKit encrypts tokens at rest using AES-256 and never exposes them after the initial save. If you suspect a token has been leaked, rotate it in your cloud provider console and update it in VMKit Settings immediately.
+</Callout>
+
+---
+
+<Tabs items={['Hetzner', 'DigitalOcean']}>
+  <Tabs.Tab>
+
+## Adding a Hetzner Account
+
+Hetzner Cloud is VMKit's recommended provider for most use cases. European datacenters start at around $4.50/month for a capable ARM64 machine, and the API is stable and fast.
+
+<Steps>
+
+### Create a new Hetzner project
+
+Log in to [console.hetzner.cloud](https://console.hetzner.cloud) and click **+ New project** in the top-left. Give it a name that makes the purpose obvious — something like `my-apps` or `vmkit-prod` works well. Click **Add project**.
+
+You'll land inside the new project's console. All VMs VMKit creates will live here.
+
+### Create an API token
+
+Inside the project, go to **Security → API Tokens** in the left sidebar. Click **Generate API Token**.
+
+- **Description:** something you'll recognize later, e.g. `vmkit-api-token`
+- **Permissions:** select **Read & Write**
+
+Click **Generate API Token**. Hetzner shows you the token once — copy it now. You won't be able to see it again.
+
+<Callout type="info">
+  The token is scoped to this project only. Even with Read & Write, it cannot touch resources in your other Hetzner projects.
+</Callout>
+
+### Add the token in VMKit
+
+In the VMKit dashboard, go to **Settings → Cloud Providers**. Click **Add Provider** and select **Hetzner Cloud** from the dropdown. Paste your API token into the field and click **Save**.
+
+VMKit will immediately validate the token by making a lightweight API call to Hetzner. If validation fails, double-check that the token has Read & Write permissions and that it belongs to the correct project.
+
+### Note the SSH key
+
+After the token is saved, VMKit generates a dedicated SSH key pair for this provider. The public key is automatically added to your Hetzner project under **Security → SSH Keys** — every VM VMKit provisions will include this key.
+
+You don't normally need to do anything with the key, but if you want to SSH into a VM manually, you can find the public key in **Settings → Cloud Providers** next to the provider entry.
+
+</Steps>
+
+  </Tabs.Tab>
+  <Tabs.Tab>
+
+## Adding a DigitalOcean Account
+
+DigitalOcean uses a flat Personal Access Token model — there are no sub-projects, so scoping is done by the permissions you grant on the token itself.
+
+<Steps>
+
+### Create a Personal Access Token
+
+Log in to [cloud.digitalocean.com](https://cloud.digitalocean.com) and go to **API → Personal Access Tokens** (in the left sidebar under **API**). Click **Generate New Token**.
+
+- **Token name:** something identifiable, like `vmkit`
+- **Expiration:** choose **No expiry** unless you want to rotate it on a schedule (you'll need to update VMKit if it expires)
+- **Scopes:** grant **Read** and **Write**
+
+Click **Generate Token**. Copy the token — it's shown only once.
+
+### Add the token in VMKit
+
+In the VMKit dashboard, go to **Settings → Cloud Providers**. Click **Add Provider** and select **DigitalOcean** from the dropdown. Paste your token and click **Save**.
+
+VMKit validates the token, then registers an SSH key in your DigitalOcean account under **Settings → Security → SSH Keys**. This key is used for all Droplets VMKit creates on your behalf.
+
+</Steps>
+
+  </Tabs.Tab>
+</Tabs>
+
+---
+
+## Supported Regions
+
+### Hetzner Cloud
+
+| Region code | Location |
+|---|---|
+| `fsn1` | Falkenstein, Germany |
+| `nbg1` | Nuremberg, Germany |
+| `hel1` | Helsinki, Finland |
+| `ash1` | Ashburn, Virginia, USA |
+| `sin1` | Singapore |
+
+### DigitalOcean
+
+| Region code | Location |
+|---|---|
+| `nyc1`, `nyc3` | New York, USA |
+| `ams3` | Amsterdam, Netherlands |
+| `sgp1` | Singapore |
+| `lon1` | London, UK |
+| `fra1` | Frankfurt, Germany |
+| `sfo3` | San Francisco, USA |
+| `tor1` | Toronto, Canada |
+| `blr1` | Bangalore, India |
+
+You select the region when you create an environment (not when you add the provider). This means one Hetzner account can power environments in multiple regions.
+
+---
+
+## Recommended starting instance
+
+If you're not sure which instance type to choose, start with the **Hetzner cax11**:
+
+| Spec | Value |
+|---|---|
+| Architecture | ARM64 (Ampere) |
+| vCPUs | 2 |
+| RAM | 4 GB |
+| Disk | 40 GB NVMe |
+| Bandwidth | 20 TB |
+| Price | ~$4.50 / month |
+
+The cax11 handles most web apps comfortably. You can resize to a cax21 (4 vCPU, 8 GB) without reprovisioning — just change the instance type on the environment's Settings tab and redeploy.
+
+---
+
+## What VMKit does with your token
+
+When you add a provider, VMKit uses the token to:
+
+- **Provision VMs** when you create a new environment (you always choose the instance type and region first).
+- **Add SSH keys** to provisioned VMs so the agent can connect.
+- **Delete VMs** when you delete an environment from the dashboard.
+- **Query pricing and region lists** to populate the dashboard dropdowns.
+
+VMKit does not use the token to create networking resources, DNS records, firewalls, object storage, or databases on the cloud provider. All of those are managed at the application layer inside the VM.
+
+---
+
+## Removing a provider
+
+Go to **Settings → Cloud Providers**, find the provider, and click **Remove**. VMKit will warn you if any active environments are using that provider — you must delete those environments first, or they will become unmanaged (the VMs keep running but VMKit can no longer reach them).
+
+After removal, the API token is permanently deleted from VMKit's database. The SSH key VMKit registered in your cloud account is not automatically removed; you can clean it up manually from your Hetzner or DigitalOcean console.

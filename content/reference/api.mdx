@@ -1,0 +1,766 @@
+---
+title: REST API Reference
+---
+
+import { Callout } from 'nextra/components'
+
+# REST API Reference
+
+## Base URL
+
+```
+https://gateway.vmkit.dev
+```
+
+## Authentication
+
+All `/api/*` routes except `/api/auth/*` and `/api/webhooks/*` require a Bearer token.
+
+```http
+Authorization: Bearer vmk_your_key_here
+```
+
+API keys are created and revoked at **Settings → API Keys** in the dashboard, or via the `/api/api-keys` endpoints below. Tokens are prefixed `vmk_` and shown exactly once on creation.
+
+<Callout type="warning">
+  The token shown at creation time is the only time the full secret is available. Store it immediately — VMKit stores only a hash.
+</Callout>
+
+---
+
+## Auth
+
+### `GET /health`
+
+Liveness probe. No auth required.
+
+**Response `200`:**
+
+```json
+{ "status": "ok" }
+```
+
+---
+
+### `GET /api/auth/github/start`
+
+Initiates the GitHub OAuth flow. Redirects the browser to GitHub's authorization page.
+
+No request body. No auth required.
+
+---
+
+### `GET /api/auth/github/callback`
+
+OAuth callback. GitHub redirects here after the user authorizes. Sets a session cookie.
+
+No request body. No auth required.
+
+---
+
+### `GET /api/auth/session`
+
+Returns the current session.
+
+**Response `200`:**
+
+```json
+{
+  "user": {
+    "id": "usr_01jx4n8rz",
+    "github_login": "badri",
+    "avatar_url": "https://avatars.githubusercontent.com/u/12345"
+  },
+  "workspace_id": "ws_01jx4n9abc"
+}
+```
+
+**Response `401`:** Not authenticated.
+
+---
+
+### `POST /api/auth/logout`
+
+Clears the session. No request body.
+
+**Response `200`:** `{ "ok": true }`
+
+---
+
+## Workspaces
+
+### `GET /api/workspaces/me`
+
+Returns the current workspace.
+
+**Response `200`:**
+
+```json
+{
+  "id": "ws_01jx4n9abc",
+  "name": "badri",
+  "github_org": "badri",
+  "created_at": "2026-04-01T10:00:00Z",
+  "plan": "hobby"
+}
+```
+
+```bash
+curl https://gateway.vmkit.dev/api/workspaces/me \
+  -H "Authorization: Bearer vmk_your_key_here"
+```
+
+---
+
+## Repos
+
+### `GET /api/repos`
+
+Lists all repos connected to the workspace.
+
+**Response `200`:**
+
+```json
+[
+  {
+    "id": "repo_01jx4n8abc",
+    "full_name": "badri/my-fastapi-app",
+    "language": "python",
+    "framework": "fastapi",
+    "last_scanned_at": "2026-05-20T14:30:00Z"
+  }
+]
+```
+
+```bash
+curl https://gateway.vmkit.dev/api/repos \
+  -H "Authorization: Bearer vmk_your_key_here"
+```
+
+---
+
+### `POST /api/repos`
+
+Connects a repo. The GitHub App must be installed on the target repository before calling this endpoint.
+
+**Request body:**
+
+```json
+{ "full_name": "badri/my-fastapi-app" }
+```
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `full_name` | `string` | Yes | GitHub repo in `owner/repo-name` format. |
+
+**Response `201`:**
+
+```json
+{
+  "id": "repo_01jx4n8abc",
+  "full_name": "badri/my-fastapi-app",
+  "scan_status": "pending"
+}
+```
+
+```bash
+curl -X POST https://gateway.vmkit.dev/api/repos \
+  -H "Authorization: Bearer vmk_your_key_here" \
+  -H "Content-Type: application/json" \
+  -d '{"full_name": "badri/my-fastapi-app"}'
+```
+
+---
+
+### `GET /api/repos/{id}`
+
+Returns repo detail including the latest scan results.
+
+**Response `200`:**
+
+```json
+{
+  "id": "repo_01jx4n8abc",
+  "full_name": "badri/my-fastapi-app",
+  "language": "python",
+  "framework": "fastapi",
+  "buildpack": "gcr.io/buildpacks/builder:v1",
+  "procfile_detected": true,
+  "dockerfile_detected": false,
+  "scan_id": "sc_01jx4n8rz3q5",
+  "last_scanned_at": "2026-05-20T14:30:00Z"
+}
+```
+
+```bash
+curl https://gateway.vmkit.dev/api/repos/repo_01jx4n8abc \
+  -H "Authorization: Bearer vmk_your_key_here"
+```
+
+---
+
+### `DELETE /api/repos/{id}`
+
+Disconnects a repo. Does not delete environments or destroy VMs.
+
+**Response `204`:** No content.
+
+```bash
+curl -X DELETE https://gateway.vmkit.dev/api/repos/repo_01jx4n8abc \
+  -H "Authorization: Bearer vmk_your_key_here"
+```
+
+---
+
+### `POST /api/repos/{id}/scan`
+
+Triggers a re-scan of the repo. Asynchronous — poll `GET /api/repos/{id}` for updated results.
+
+**Response `202`:**
+
+```json
+{ "scan_id": "sc_01jx5new", "status": "queued" }
+```
+
+```bash
+curl -X POST https://gateway.vmkit.dev/api/repos/repo_01jx4n8abc/scan \
+  -H "Authorization: Bearer vmk_your_key_here"
+```
+
+---
+
+## Environments
+
+### `GET /api/repos/{id}/environments`
+
+Lists environments for a repo.
+
+**Response `200`:**
+
+```json
+[
+  {
+    "id": "env_01jx4pa",
+    "name": "staging",
+    "status": "live",
+    "app_url": "https://my-fastapi-app-staging.vmkit.app",
+    "instance_id": "inst_01jx4n9abc",
+    "created_at": "2026-05-01T09:00:00Z"
+  }
+]
+```
+
+```bash
+curl https://gateway.vmkit.dev/api/repos/repo_01jx4n8abc/environments \
+  -H "Authorization: Bearer vmk_your_key_here"
+```
+
+---
+
+### `POST /api/repos/{id}/environments`
+
+Creates a new environment for a repo.
+
+**Request body:**
+
+```json
+{
+  "name": "production",
+  "compute_target_id": "ct_01jx4m7xyz",
+  "region": "fsn1",
+  "instance_type": "cax11"
+}
+```
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `name` | `string` | Yes | Environment name (slug, lowercase, hyphens allowed). |
+| `compute_target_id` | `string` | Yes | ID of the cloud provider to provision on. |
+| `region` | `string` | No | Provider region code. Defaults to provider default. |
+| `instance_type` | `string` | No | VM size. Defaults to `cax11` (Hetzner) or `s-2vcpu-2gb` (DigitalOcean). |
+
+**Response `201`:**
+
+```json
+{
+  "id": "env_01jx5pb",
+  "name": "production",
+  "status": "pending",
+  "app_url": null,
+  "instance_id": null
+}
+```
+
+---
+
+### `GET /api/environments/{id}`
+
+Returns environment detail.
+
+**Response `200`:**
+
+```json
+{
+  "id": "env_01jx4pa",
+  "name": "staging",
+  "status": "live",
+  "app_url": "https://my-fastapi-app-staging.vmkit.app",
+  "instance_id": "inst_01jx4n9abc",
+  "repo_id": "repo_01jx4n8abc",
+  "compute_target_id": "ct_01jx4m7xyz",
+  "region": "fsn1",
+  "instance_type": "cax11",
+  "created_at": "2026-05-01T09:00:00Z",
+  "last_deployed_at": "2026-05-20T15:00:00Z"
+}
+```
+
+```bash
+curl https://gateway.vmkit.dev/api/environments/env_01jx4pa \
+  -H "Authorization: Bearer vmk_your_key_here"
+```
+
+---
+
+### `PATCH /api/environments/{id}`
+
+Updates environment settings. All fields optional; only supplied fields are modified.
+
+**Request body:**
+
+```json
+{
+  "name": "staging-v2",
+  "instance_type": "cx21"
+}
+```
+
+| Field | Type | Description |
+|---|---|---|
+| `name` | `string` | Rename the environment. Updates DNS subdomain on next deploy. |
+| `instance_type` | `string` | Change VM size. Takes effect on next VM provision. |
+
+**Response `200`:** Full environment object (same shape as `GET /api/environments/{id}`).
+
+---
+
+## Env Vars
+
+### `GET /api/environments/{id}/env-vars`
+
+Lists env vars for an environment. Values for vars marked `secret` are redacted to `"***"`.
+
+**Response `200`:**
+
+```json
+[
+  { "key": "SENTRY_DSN", "value": "https://abc@o0.ingest.sentry.io/0", "secret": false },
+  { "key": "STRIPE_SECRET_KEY", "value": "***", "secret": true }
+]
+```
+
+```bash
+curl https://gateway.vmkit.dev/api/environments/env_01jx4pa/env-vars \
+  -H "Authorization: Bearer vmk_your_key_here"
+```
+
+---
+
+### `PUT /api/environments/{id}/env-vars`
+
+Full replacement of all user-defined env vars for an environment. Vars not included in the request body are deleted.
+
+**Request body:**
+
+```json
+[
+  { "key": "SENTRY_DSN", "value": "https://abc@o0.ingest.sentry.io/0", "secret": false },
+  { "key": "STRIPE_SECRET_KEY", "value": "sk_live_xxx", "secret": true }
+]
+```
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `key` | `string` | Yes | Env var name. Must match `[A-Z_][A-Z0-9_]*`. |
+| `value` | `string` | Yes | String value. No quoting required. |
+| `secret` | `boolean` | No | If `true`, value is stored encrypted and redacted in GET responses. Default: `false`. |
+
+**Response `200`:** Array of saved env vars (secrets redacted).
+
+```bash
+curl -X PUT https://gateway.vmkit.dev/api/environments/env_01jx4pa/env-vars \
+  -H "Authorization: Bearer vmk_your_key_here" \
+  -H "Content-Type: application/json" \
+  -d '[{"key":"DATABASE_URL","value":"postgres://...","secret":true}]'
+```
+
+<Callout type="warning">
+  Env var changes take effect on the next deploy, not immediately. The running container is not restarted.
+</Callout>
+
+---
+
+## Compute Targets
+
+### `GET /api/compute-targets`
+
+Lists all cloud providers registered in the workspace.
+
+**Response `200`:**
+
+```json
+[
+  {
+    "id": "ct_01jx4m7xyz",
+    "provider": "hetzner",
+    "name": "My Hetzner Account",
+    "status": "valid",
+    "default_region": "fsn1"
+  }
+]
+```
+
+---
+
+### `POST /api/compute-targets`
+
+Registers a cloud provider.
+
+**Request body:**
+
+```json
+{
+  "provider": "hetzner",
+  "name": "My Hetzner Account",
+  "api_token": "HZNxxxxxxxx"
+}
+```
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `provider` | `"hetzner" \| "digitalocean"` | Yes | Cloud provider identifier. |
+| `name` | `string` | Yes | Display name for this credential set. |
+| `api_token` | `string` | Yes | Provider API token. Stored encrypted; never returned in responses. |
+
+**Response `201`:**
+
+```json
+{
+  "id": "ct_01jx4m7xyz",
+  "provider": "hetzner",
+  "name": "My Hetzner Account",
+  "status": "valid",
+  "default_region": "fsn1"
+}
+```
+
+```bash
+curl -X POST https://gateway.vmkit.dev/api/compute-targets \
+  -H "Authorization: Bearer vmk_your_key_here" \
+  -H "Content-Type: application/json" \
+  -d '{"provider":"hetzner","name":"My Hetzner Account","api_token":"HZNxxx"}'
+```
+
+---
+
+### `GET /api/compute-targets/{id}`
+
+Returns provider detail. The `api_token` field is never included in responses.
+
+**Response `200`:** Same shape as the `POST` response.
+
+---
+
+### `DELETE /api/compute-targets/{id}`
+
+Removes a cloud provider. Fails with `409` if any active environments reference this provider.
+
+**Response `204`:** No content.
+
+---
+
+## Instances
+
+### `GET /api/instances`
+
+Lists all VMs provisioned in the workspace.
+
+**Response `200`:**
+
+```json
+[
+  {
+    "id": "inst_01jx4n9abc",
+    "provider": "hetzner",
+    "region": "fsn1",
+    "instance_type": "cax11",
+    "ip": "65.21.100.200",
+    "status": "running",
+    "agent_connected": true,
+    "environment_id": "env_01jx4pa"
+  }
+]
+```
+
+---
+
+### `GET /api/instances/{id}`
+
+Returns instance detail including current health metrics.
+
+**Response `200`:**
+
+```json
+{
+  "id": "inst_01jx4n9abc",
+  "provider": "hetzner",
+  "region": "fsn1",
+  "instance_type": "cax11",
+  "ip": "65.21.100.200",
+  "status": "running",
+  "agent_connected": true,
+  "agent_version": "0.4.2",
+  "environment_id": "env_01jx4pa",
+  "metrics": {
+    "cpu_pct": 8.2,
+    "mem_pct": 41.5,
+    "disk_pct": 22.1,
+    "container_count": 2,
+    "collected_at": "2026-05-22T10:00:00Z"
+  }
+}
+```
+
+```bash
+curl https://gateway.vmkit.dev/api/instances/inst_01jx4n9abc \
+  -H "Authorization: Bearer vmk_your_key_here"
+```
+
+---
+
+### `DELETE /api/instances/{id}`
+
+Destroys the VM by calling the cloud provider's delete API. Also removes the DNS A record. Irreversible.
+
+**Response `202`:** Destruction is asynchronous.
+
+```json
+{ "status": "destroying" }
+```
+
+---
+
+## Deploys
+
+### `GET /api/deploys`
+
+Lists deploys for the workspace, most recent first. Paginated.
+
+**Query parameters:**
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `page` | `integer` | `1` | Page number (1-indexed). |
+| `per_page` | `integer` | `20` | Results per page. Max `100`. |
+| `environment_id` | `string` | — | Filter by environment. |
+| `repo_id` | `string` | — | Filter by repo. |
+
+**Response `200`:**
+
+```json
+{
+  "data": [
+    {
+      "id": "dep_01jx5p0qr8",
+      "repo_full_name": "badri/my-fastapi-app",
+      "environment_name": "staging",
+      "status": "succeeded",
+      "sha": "abc1234",
+      "triggered_by": "push",
+      "created_at": "2026-05-22T09:00:00Z",
+      "completed_at": "2026-05-22T09:07:32Z"
+    }
+  ],
+  "total": 42,
+  "page": 1,
+  "per_page": 20
+}
+```
+
+---
+
+### `GET /api/deploys/{id}`
+
+Returns deploy detail.
+
+**Response `200`:**
+
+```json
+{
+  "id": "dep_01jx5p0qr8",
+  "repo_full_name": "badri/my-fastapi-app",
+  "environment_name": "staging",
+  "status": "succeeded",
+  "sha": "abc1234",
+  "triggered_by": "push",
+  "run_url": "https://github.com/badri/my-fastapi-app/actions/runs/14912345",
+  "app_url": "https://my-fastapi-app-staging.vmkit.app",
+  "instance_id": "inst_01jx4n9abc",
+  "created_at": "2026-05-22T09:00:00Z",
+  "completed_at": "2026-05-22T09:07:32Z"
+}
+```
+
+---
+
+### `POST /api/deploys/{id}/cancel`
+
+Cancels a deploy that is in `running` or `queued` status. Sends a cancellation signal to the GitHub Actions run.
+
+**Response `200`:** `{ "status": "cancelling" }`
+
+**Response `409`:** Deploy is already in a terminal state.
+
+---
+
+### `GET /api/deploys/{id}/logs`
+
+Returns log lines for a deploy, combining GitHub Actions output and Kamal output.
+
+**Response `200`:**
+
+```json
+{
+  "lines": [
+    { "ts": "2026-05-22T09:01:00Z", "source": "actions", "text": "Run buildpacks/github-init-tools@v1.2.3" },
+    { "ts": "2026-05-22T09:06:45Z", "source": "kamal",   "text": "Finished all in 2.345 seconds" }
+  ]
+}
+```
+
+---
+
+## Jobs
+
+### `GET /api/jobs`
+
+Returns the background job queue status for the workspace.
+
+**Response `200`:**
+
+```json
+{
+  "queued": 0,
+  "running": 1,
+  "jobs": [
+    {
+      "id": "job_01jx5q1abc",
+      "type": "vm_provision",
+      "status": "running",
+      "environment_id": "env_01jx4pa",
+      "created_at": "2026-05-22T09:00:00Z"
+    }
+  ]
+}
+```
+
+---
+
+## API Keys
+
+### `GET /api/api-keys`
+
+Lists API keys in the workspace. Secrets are never returned.
+
+**Response `200`:**
+
+```json
+[
+  {
+    "id": "ak_01jx4k9def",
+    "name": "claude-code-local",
+    "prefix": "vmk_a1b2",
+    "created_at": "2026-05-01T08:00:00Z",
+    "last_used_at": "2026-05-22T09:00:00Z"
+  }
+]
+```
+
+---
+
+### `POST /api/api-keys`
+
+Creates an API key. The full token is returned **exactly once** in this response and is never retrievable again.
+
+**Request body:**
+
+```json
+{ "name": "claude-code-local" }
+```
+
+**Response `201`:**
+
+```json
+{
+  "id": "ak_01jx4k9def",
+  "name": "claude-code-local",
+  "token": "vmk_a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6"
+}
+```
+
+```bash
+curl -X POST https://gateway.vmkit.dev/api/api-keys \
+  -H "Authorization: Bearer vmk_your_key_here" \
+  -H "Content-Type: application/json" \
+  -d '{"name": "claude-code-local"}'
+```
+
+---
+
+### `DELETE /api/api-keys/{id}`
+
+Revokes an API key immediately. Any in-flight requests using the key will fail with `401` after revocation.
+
+**Response `204`:** No content.
+
+---
+
+## Webhooks
+
+### `POST /api/webhooks/github`
+
+GitHub App webhook receiver. Validates the `X-Hub-Signature-256` header using the shared webhook secret configured in the GitHub App settings.
+
+**Not for direct use.** This endpoint is called by GitHub, not by API consumers.
+
+| Header | Required | Description |
+|---|---|---|
+| `X-Hub-Signature-256` | Yes | HMAC-SHA256 of the raw request body, prefixed `sha256=`. |
+| `X-GitHub-Event` | Yes | Event type (e.g. `workflow_run`, `push`, `installation`). |
+| `X-GitHub-Delivery` | Yes | Unique delivery UUID from GitHub. |
+
+**Response `200`:** `{ "ok": true }` on successful receipt and validation.
+
+**Response `401`:** Signature mismatch.
+
+---
+
+## Error Shapes
+
+All error responses use a consistent JSON envelope:
+
+```json
+{
+  "error": "error_code_snake_case",
+  "message": "Human-readable description."
+}
+```
+
+| HTTP status | Common `error` values |
+|---|---|
+| `400` | `validation_error`, `invalid_token`, `invalid_provider` |
+| `401` | `unauthorized`, `token_expired`, `token_revoked` |
+| `403` | `forbidden`, `github_app_not_installed` |
+| `404` | `repo_not_found`, `environment_not_found`, `instance_not_found`, `deploy_not_found` |
+| `409` | `compute_target_in_use`, `deploy_already_terminal` |
+| `500` | `internal_error`, `provider_api_error` |

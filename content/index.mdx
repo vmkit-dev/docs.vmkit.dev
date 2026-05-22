@@ -1,0 +1,117 @@
+---
+title: Introduction
+---
+
+import { Callout, Cards, Steps } from 'nextra/components'
+
+# VMKit
+
+**Deploy containers to your VMs. GitHub push, zero config.**
+
+VMKit is an AI-native deployment platform built for solo developers, indie hackers, and anyone who used Claude or Cursor to build something and now needs to actually ship it. It wires GitHub push deploys, Buildpack-based container builds, and Kamal deployments together into a single flow that goes from code to live URL in under ten minutes — on a server you own.
+
+You bring a $6/month Hetzner or DigitalOcean VM. VMKit does the rest.
+
+---
+
+## The Problem
+
+You've built something real. Now you need to put it on the internet.
+
+<Callout type="info" emoji="💡">
+  **The deployment trilemma:** PaaS platforms are fast to set up but expensive at scale and full of cold starts. Rolling your own CI/CD is flexible but eats days you don't have. Self-hosted tools like Coolify and Cleavr get you closer, but they weren't built with Python-first or AI-native workflows in mind.
+
+  VMKit is the middle path.
+</Callout>
+
+| Option | Cost at scale | Setup time | Cold starts | AI-native |
+|---|---|---|---|---|
+| Railway / Render | $$$ | Minutes | Yes | No |
+| DIY (Ansible + CI) | $ | Days | No | No |
+| Coolify / Cleavr | $ | Hours | No | Partial |
+| **VMKit** | **$** | **Minutes** | **No** | **Yes** |
+
+You get Railway-level developer experience — git push, live URL, rollbacks — at the cost of a basic VM. No vendor lock-in, no cold starts, no surprises on your invoice at the end of the month.
+
+---
+
+## How It Fits Together
+
+Push to `main` and VMKit takes it from there. GitHub Actions builds your app into a container image using [Cloud Native Buildpacks](https://buildpacks.io/) (no Dockerfile needed), pushes it to GHCR, then the VMKit control plane coordinates Kamal to deploy it onto your VM. A `vmkit-agent` process running on the VM streams logs and health signals back to the dashboard in real time.
+
+```mermaid
+graph LR
+    A[git push] --> B[GitHub Actions]
+    B --> C[Buildpacks\nbuild image]
+    C --> D[GHCR\ncontainer registry]
+    D --> E[VMKit\ncontrol plane]
+    E --> F[Kamal deploy]
+    F --> G[Your VM\nvmkit-agent]
+    G --> H[Live URL\napp-env.vmkit.app]
+
+    style A fill:#1a1a2e,color:#e0e0e0
+    style H fill:#16213e,color:#7bed9f
+```
+
+The MCP integration means you can drive the entire flow from Claude Code — add a repo, create an environment, trigger a deploy — without leaving your editor.
+
+---
+
+## Key Features
+
+<Cards>
+  <Cards.Card
+    title="Git-push deploys"
+    href="/how-it-works"
+    description="Push to main and a deploy kicks off automatically. No YAML archaeology. No Docker knowledge required."
+  />
+  <Cards.Card
+    title="Bring Your Own Server"
+    href="/guides/connect-provider"
+    description="Your Hetzner or DigitalOcean VM. ~$6/month. VMKit installs its agent; you keep ownership of the machine."
+  />
+  <Cards.Card
+    title="MCP integration"
+    href="/guides/mcp-setup"
+    description="Deploy, tail logs, and check status directly from Claude Code. VMKit speaks MCP natively."
+  />
+  <Cards.Card
+    title="Buildpack auto-detection"
+    href="/concepts/buildpacks"
+    description="Python, Node.js, Ruby, Go, Rust — no Dockerfile needed. VMKit scans your repo and picks the right builder."
+  />
+  <Cards.Card
+    title="One-click services"
+    href="/guides/services"
+    description="Postgres, Redis, MySQL, Meilisearch, Qdrant. Provisioned alongside your app, connection string injected automatically."
+  />
+  <Cards.Card
+    title="Logs and monitoring"
+    href="/guides/observability"
+    description="Real-time log streaming and metrics from the dashboard or CLI. No separate Datadog bill."
+  />
+</Cards>
+
+---
+
+## Who Should Use VMKit
+
+| You are... | VMKit gives you... |
+|---|---|
+| A solo developer shipping a SaaS side project | Production-grade deploys without a DevOps hire |
+| An indie hacker who AI-coded an app with Claude/Cursor | A path from repo to live URL in one afternoon |
+| A small team on a budget | 3–5x cheaper than Railway/Render at equivalent traffic |
+| A Python or ML engineer | First-class Python support; Postgres and Qdrant as one-click services |
+| Someone who tried Coolify/Cleavr and got stuck | Sane defaults, MCP tooling, and human-readable error messages |
+
+VMKit is not the right tool if you need multi-region, auto-scaling to hundreds of nodes, or a fully managed database cluster. For those needs, a managed cloud platform is the honest answer.
+
+---
+
+## What's Next
+
+Ready to deploy your first app?
+
+- [Quickstart](/quickstart) — from zero to live URL in 10 minutes
+- [How It Works](/how-it-works) — the full architecture, explained
+- [MCP Setup](/guides/mcp-setup) — drive VMKit from Claude Code

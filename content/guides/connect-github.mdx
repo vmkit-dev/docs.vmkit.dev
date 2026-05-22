@@ -1,0 +1,98 @@
+---
+title: Connect Your GitHub Account
+description: Authorize VMKit to access your repositories via GitHub OAuth and the VMKit GitHub App.
+---
+
+import { Callout, Steps } from 'nextra/components'
+
+# Connect Your GitHub Account
+
+VMKit uses two separate GitHub mechanisms: **OAuth** to identify who you are, and a **GitHub App** to access the specific repositories you want to deploy. Both happen during the initial sign-up flow, but they serve different purposes and can be managed independently.
+
+## What VMKit needs from GitHub
+
+Before you go through the steps, here is exactly what VMKit can and cannot see:
+
+| What VMKit can access | What VMKit cannot do |
+|---|---|
+| The list of repos covered by your App installation | Clone your source code to VMKit servers |
+| File contents via the GH API (for Buildpack scanning) | Read repos you haven't explicitly granted |
+| Dispatch GitHub Actions workflows | Write commits or modify branch settings |
+| Open pull requests for config files (e.g., `.github/workflows/vmkit.yml`) | Access your private SSH keys or GPG keys |
+
+Buildpack scanning reads files like `requirements.txt`, `package.json`, and `Procfile` through the GitHub API — your source code never lands on VMKit infrastructure.
+
+---
+
+<Steps>
+
+### Sign in at the VMKit dashboard
+
+Go to [dashboard.vmkit.dev](https://dashboard.vmkit.dev) and click **Sign in with GitHub**.
+
+GitHub will ask you to authorize the VMKit OAuth application. This grants VMKit permission to read your public profile (name, avatar, email) and to know which organizations you belong to. It does **not** grant repository access — that comes in the next step.
+
+After authorization, you'll land on the VMKit dashboard for the first time.
+
+### Install the VMKit GitHub App
+
+Immediately after your first sign-in, VMKit will prompt you to install the GitHub App. Click **Install GitHub App** — this opens GitHub's App installation page in a new tab.
+
+On that page you choose the scope of access:
+
+- **All repositories** — VMKit can see every current and future repo under your account or org.
+- **Only select repositories** — you pick a list; VMKit can only see those. You can add more later without reinstalling.
+
+<Callout type="info">
+  You don't need to grant access to everything. If you only plan to deploy one or two projects, select just those repos. You can expand the list at any time from your GitHub account settings under **Applications → VMKit**.
+</Callout>
+
+Click **Install & Authorize** to confirm. GitHub redirects you back to the VMKit dashboard.
+
+### Verify your repos appear
+
+In the VMKit dashboard, navigate to the **Repos** page using the left sidebar. You should see a list of the repositories you granted access to.
+
+If the list is empty or a repo you expected is missing:
+
+1. Click **Connect Repo** — this opens a search modal that lets you search your installed repos by name.
+2. If the repo still doesn't appear, it may not be covered by your App installation. Go to your GitHub settings → **Applications → VMKit → Repository access** and add it, then return to VMKit and refresh.
+
+### Connect a specific repo
+
+From the Repos page, click **Connect Repo**. The modal searches your GitHub App installation in real time — type a few characters of the repo name and select it.
+
+Once connected, VMKit queues a background scan of the repo. Within a few seconds the repo card will show the detected language and framework (e.g., **Python / FastAPI** or **Node.js / Next.js**). If VMKit can't determine the stack, you'll see a prompt to configure it manually.
+
+</Steps>
+
+---
+
+## Managing access later
+
+### Changing which repos VMKit can see
+
+VMKit's repo access is controlled entirely by the GitHub App installation — not by VMKit itself. To add or remove repos:
+
+1. Go to your GitHub account → **Settings → Applications → Installed GitHub Apps → VMKit → Configure**.
+2. Change the repository selection.
+3. Return to the VMKit **Repos** page; the list will update within a few seconds.
+
+### Disconnecting VMKit from GitHub
+
+To fully revoke VMKit's GitHub access, uninstall the GitHub App from the same page. This does not delete your VMKit account or any existing deployments, but VMKit will no longer be able to trigger new builds.
+
+To also remove OAuth authorization, go to **GitHub → Settings → Applications → Authorized OAuth Apps → VMKit → Revoke**.
+
+---
+
+## Troubleshooting
+
+**"No repos found" after installation**
+Make sure you completed the GitHub App installation step, not just the OAuth step. They're separate. Check GitHub → Settings → Applications and confirm VMKit appears under **Installed GitHub Apps** (not just **Authorized OAuth Apps**).
+
+**A scan shows the wrong language or framework**
+VMKit uses heuristic Buildpack detection. If it picks the wrong builder, go to the repo's detail page and use the **Override buildpack** option to select the correct one manually.
+
+**Organization repos not showing up**
+If you want to connect a repo from a GitHub organization, a GitHub organization owner must install the VMKit App on that organization. You can request the installation from your organization's App settings page.

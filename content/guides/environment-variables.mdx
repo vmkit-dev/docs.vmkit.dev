@@ -1,0 +1,242 @@
+---
+title: Environment Variables
+description: Set, manage, and understand environment variables in VMKit — including system-injected vars and secret handling.
+---
+
+import { Callout, Steps } from 'nextra/components'
+
+# Environment Variables
+
+Environment variables are the standard way to configure a VMKit app: database connection strings, API keys, feature flags, and anything else that differs between environments or needs to stay out of source control. VMKit injects them as Docker environment variables at deploy time, so your app reads them exactly as it would read any other env var — via `process.env`, `os.environ`, `ENV`, or whichever mechanism your language uses.
+
+---
+
+## How env vars work in VMKit
+
+When you trigger a deploy, VMKit assembles a complete set of environment variables from two sources:
+
+1. **Variables you set manually** — via the dashboard or the VMKit API
+2. **System-injected variables** — automatically added by VMKit based on your app's configuration and addons
+
+Both sets are passed to Kamal as Docker `--env` flags when it starts each container. They are not written to any file on disk inside the container; they exist only in the process environment.
+
+<Callout type="warning">
+  Do not commit secrets to your git repository. Even if you later remove them from history, they may have already been scanned and cached by automated bots. Use the VMKit env vars panel for all secrets — VMKit stores them encrypted and never writes them to your codebase.
+</Callout>
+
+---
+
+## Setting env vars via the dashboard
+
+<Steps>
+
+### Open the environment
+
+In the VMKit dashboard, go to **Repos**, click your repo, then click the environment you want to configure (e.g., `staging` or `production`).
+
+### Open the Env Vars panel
+
+Click the **Env Vars** tab in the environment view. You'll see a table of current variables and an **Add Variable** button.
+
+### Add a variable
+
+Click **Add Variable**. Enter the key (e.g., `SECRET_KEY`) and the value. The value field is masked by default — click the eye icon to reveal it while you're typing if needed.
+
+Click **Save**. VMKit stores the value encrypted.
+
+### Redeploy to apply
+
+Environment variable changes take effect on the next deploy. VMKit shows a **"Redeploy required"** banner after you save a variable change. Click **Deploy** from the banner (or from the Deploys tab) to roll out the change.
+
+</Steps>
+
+<Callout type="info">
+  Variables are scoped to a single environment. A `SECRET_KEY` set on `staging` is not visible to `production`. This is intentional — staging and production should be isolated configurations.
+</Callout>
+
+---
+
+## Setting env vars via the API
+
+If you're scripting deployments or managing env vars programmatically, the VMKit API accepts the same operations. First, create an API key under **Settings → API Keys** (keys start with `vmk_`).
+
+```bash
+# List current env vars for an environment
+curl -s \
+  -H "Authorization: Bearer $VMK_TOKEN" \
+  "https://gateway.vmkit.dev/v1/repos/{repo_id}/environments/{env_id}/vars" \
+  | jq '.vars[]'
+
+# Set or update a variable
+curl -s -X PUT \
+  -H "Authorization: Bearer $VMK_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"key": "SECRET_KEY", "value": "super-secret-value"}' \
+  "https://gateway.vmkit.dev/v1/repos/{repo_id}/environments/{env_id}/vars"
+
+# Delete a variable
+curl -s -X DELETE \
+  -H "Authorization: Bearer $VMK_TOKEN" \
+  "https://gateway.vmkit.dev/v1/repos/{repo_id}/environments/{env_id}/vars/SECRET_KEY"
+```
+
+The API never returns the plaintext value of a variable — only the key name and a masked preview (e.g., `SECRET_KEY=super***alue`).
+
+---
+
+## System-injected variables
+
+VMKit automatically injects the following variables. You cannot override them — if you try to set a variable with the same name, VMKit will warn you and use the system value.
+
+| Variable | When it's set | Format / Example |
+|---|---|---|
+| `PORT` | Always | `3000` (integer, assigned by Kamal) |
+| `APP_ENV` | Always | `staging` or `production` (matches your environment name) |
+| `DATABASE_URL` | When Postgres addon is added | `postgresql://user:pass@localhost:5432/dbname` |
+| `REDIS_URL` | When Redis addon is added | `redis://:pass@localhost:6379/0` |
+| `DATABASE_POOL_SIZE` | When Postgres addon is added | `5` (default connection pool hint) |
+| `VMKIT_DEPLOY_ID` | Always | UUID of the current deploy (useful for logging) |
+| `VMKIT_REPO_SLUG` | Always | Slug of the repo (e.g., `my-api`) |
+| `VMKIT_ENV_SLUG` | Always | Slug of the environment (e.g., `staging`) |
+
+### How `PORT` works
+
+Kamal assigns a port when it starts a container and passes it in via `PORT`. You must bind your web server to `0.0.0.0:$PORT` — not to `localhost` and not to a hardcoded port number. The Kamal proxy health check will fail if your server isn't listening on `PORT`.
+
+```python filename="Python (FastAPI)"
+# In your Procfile:
+# web: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+```
+
+```js filename="Node.js (Express)"
+const port = parseInt(process.env.PORT, 10)
+app.listen(port, '0.0.0.0')
+```
+
+```ruby filename="Ruby (Puma)"
+# Puma reads PORT automatically via the 'puma' gem defaults
+```
+
+### How `APP_ENV` works
+
+`APP_ENV` reflects the environment name you set in VMKit — it will be `staging` for an environment named "staging" and `production` for one named "production". Use it to control Rails environments, Django's `DEBUG` setting, or any other framework-level switch:
+
+```python filename="settings.py (Django)"
+import os
+DEBUG = os.environ.get('APP_ENV') != 'production'
+```
+
+```js filename="config.js (Node.js)"
+const isProduction = process.env.APP_ENV === 'production'
+```
+
+---
+
+## Secret variables
+
+All variables set via the VMKit dashboard or API are treated as secrets:
+
+- Stored encrypted at rest using AES-256
+- Never logged in deploy output or error messages
+- Never returned in plaintext via the API (only masked previews)
+- Not accessible to other VMKit users on your team unless they have environment access
+
+Secrets are decrypted in-memory at deploy time and injected into the container. They are not written to any file on disk.
+
+---
+
+## Promoting variables from staging to production
+
+VMKit does not have a one-click "copy all vars from staging to production" feature — this is intentional. Production variables often differ in meaningful ways (different secrets, different endpoints, stricter settings), and copying them blindly is a common source of production incidents.
+
+The recommended approach:
+
+1. On your staging environment, go to **Env Vars** and open each variable.
+2. On your production environment, add each variable you want to promote with the appropriate production value.
+3. Deploy production to apply.
+
+If you're managing many variables across environments, the API approach is more practical:
+
+```bash
+# Export staging vars (keys only — values are masked by the API)
+curl -s \
+  -H "Authorization: Bearer $VMK_TOKEN" \
+  "https://gateway.vmkit.dev/v1/repos/{repo_id}/environments/{staging_env_id}/vars" \
+  | jq -r '.vars[].key'
+```
+
+Use the key list as a checklist and set each one on production with the correct value.
+
+---
+
+## Using env vars in your app
+
+### Python
+
+```python filename="app/config.py"
+import os
+
+DATABASE_URL = os.environ["DATABASE_URL"]   # raises KeyError if missing — fail fast
+REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
+DEBUG = os.environ.get("APP_ENV", "staging") != "production"
+SECRET_KEY = os.environ["SECRET_KEY"]
+```
+
+Using `pydantic-settings` (recommended for FastAPI):
+
+```python filename="app/config.py"
+from pydantic_settings import BaseSettings
+
+class Settings(BaseSettings):
+    database_url: str
+    redis_url: str = "redis://localhost:6379/0"
+    secret_key: str
+    app_env: str = "staging"
+
+    @property
+    def is_production(self) -> bool:
+        return self.app_env == "production"
+
+settings = Settings()   # reads from environment automatically
+```
+
+### Node.js
+
+```typescript filename="src/config.ts"
+function required(key: string): string {
+  const value = process.env[key]
+  if (!value) throw new Error(`Missing required env var: ${key}`)
+  return value
+}
+
+export const config = {
+  databaseUrl: required('DATABASE_URL'),
+  redisUrl: process.env.REDIS_URL ?? 'redis://localhost:6379/0',
+  secretKey: required('SECRET_KEY'),
+  isProduction: process.env.APP_ENV === 'production',
+}
+```
+
+### Ruby / Rails
+
+```ruby filename="config/application.rb"
+# Rails reads ENV automatically. For additional validation:
+config.x.database_url = ENV.fetch("DATABASE_URL") { raise "DATABASE_URL is required" }
+config.x.redis_url    = ENV.fetch("REDIS_URL", "redis://localhost:6379/0")
+```
+
+---
+
+## Common mistakes
+
+**Setting `PORT` manually**
+VMKit's system-injected `PORT` will override yours. Don't set it. Just read `$PORT` (or `process.env.PORT`) in your start command.
+
+**Storing secrets in `config/` files committed to git**
+If your framework uses config files (e.g., Django's `settings.py`, Rails' `credentials.yml.enc`), keep secrets in the env vars panel and read them at runtime. Don't put production values in source control.
+
+**Forgetting to redeploy after changing a variable**
+Env vars are injected at deploy time. Saving a new value in the dashboard doesn't restart your app. You must trigger a new deploy for the change to reach your running containers.
+
+**Using `.env` files in production**
+`.env` files are for local development. In production, env vars come from VMKit's injection layer. Libraries like `python-dotenv` or `dotenv` for Node often load `.env` files as a fallback — make sure they're configured to skip if the env var is already set (which it will be on VMKit).
