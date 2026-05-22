@@ -1,0 +1,5 @@
+name = "docs-vmkit-dev"
+account_id = "d9fcbca4a122cae770d16babb4ac2dd4"
+compatibility_date = "2025-05-01"
+
+pages_build_output_dir = "out"
